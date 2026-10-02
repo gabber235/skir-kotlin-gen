@@ -44,8 +44,62 @@ class KotlinCodeGenerator implements CodeGenerator<Config> {
         ).generate(),
       });
     }
+    outputFiles.push({
+      path: "serializer_registry.kt",
+      code: generateSerializerRegistry(input.modules, config),
+    });
     return { files: outputFiles };
   }
+}
+
+function generateSerializerRegistry(
+  modules: readonly Module[],
+  config: Config,
+): string {
+  const packagePrefix = config.packagePrefix ?? "";
+  const namer = new Namer(packagePrefix);
+  const records = modules
+    .flatMap((module) => module.records)
+    .sort((left, right) =>
+      namer
+        .getClassName(left)
+        .qualifiedName.localeCompare(namer.getClassName(right).qualifiedName),
+    );
+  const finalizers = records
+    .map(
+      (record) =>
+        `        ${namer.getClassName(record).qualifiedName}._finalizeSerializer()`,
+    )
+    .join("\n");
+  return `@file:Suppress("ktlint")
+
+package ${packagePrefix}skirout
+
+internal object _SkirSerializerRegistry {
+    @Volatile
+    private var initialized = false
+    private var initializingThread: Thread? = null
+
+    fun ensureInitialized() {
+        if (initialized) return
+        initialize()
+    }
+
+    @Synchronized
+    private fun initialize() {
+        if (initialized) return
+        val currentThread = Thread.currentThread()
+        if (initializingThread === currentThread) return
+        initializingThread = currentThread
+        try {
+${finalizers}
+            initialized = true
+        } finally {
+            initializingThread = null
+        }
+    }
+}
+`;
 }
 
 // Generates the code for one Kotlin file.
@@ -153,7 +207,7 @@ class KotlinSourceFileGenerator {
     for (const field of fields) {
       const fieldName = namer.structFieldToKotlinName(field);
       const type = typeSpeller.getKotlinType(field.type!, "frozen");
-      if (field.isRecursive === "hard") {
+      if (field.isRecursive) {
         this.push(`private val __${fieldName}: ${type}?,\n`);
       } else {
         this.push(`override val ${fieldName}: ${type},\n`);
@@ -165,7 +219,7 @@ class KotlinSourceFileGenerator {
       `): ${qualifiedName}_OrMutable {\n`,
     );
     for (const field of fields) {
-      if (field.isRecursive === "hard") {
+      if (field.isRecursive) {
         const fieldName = namer.structFieldToKotlinName(field);
         const defaultExpr = this.getDefaultExpression(field.type!);
         this.push(
@@ -246,6 +300,7 @@ class KotlinSourceFileGenerator {
       ").hashCode();\n",
       "}\n\n",
       "override fun toString(): kotlin.String {\n",
+      `${this.packagePrefix}skirout._SkirSerializerRegistry.ensureInitialized();\n`,
       "return build.skir.internal.toStringImpl(\n",
       "this,\n",
       `${qualifiedName}.serializerImpl,\n`,
@@ -292,9 +347,7 @@ class KotlinSourceFileGenerator {
     );
     for (const field of fields) {
       this.push(
-        field.isRecursive === "hard"
-          ? "null"
-          : this.getDefaultExpression(field.type!),
+        field.isRecursive ? "null" : this.getDefaultExpression(field.type!),
         ",\n",
       );
     }
@@ -333,11 +386,18 @@ class KotlinSourceFileGenerator {
       "getUnrecognizedFields = { it._unrecognizedFields },\n",
       "setUnrecognizedFields = { m, u -> m._unrecognizedFields = u },\n",
       ");\n\n",
+      "private val rawSerializer = build.skir.internal.makeSerializer(serializerImpl);\n\n",
       `/** Serializer for [${className.name}] instances. */\n`,
-      "val serializer = build.skir.internal.makeSerializer(serializerImpl);\n\n",
+      `val serializer get(): build.skir.Serializer<${qualifiedName}> {\n`,
+      `${this.packagePrefix}skirout._SkirSerializerRegistry.ensureInitialized();\n`,
+      "return rawSerializer;\n",
+      "}\n\n",
       `/** Describes the [${className.name}] type. Provides runtime introspection capabilities. */\n`,
-      "val typeDescriptor get() = serializerImpl.typeDescriptor;\n\n",
-      "init {\n",
+      `val typeDescriptor: build.skir.reflection.StructDescriptor.Reflective<${qualifiedName}, ${qualifiedName}.Mutable> get() {\n`,
+      `${this.packagePrefix}skirout._SkirSerializerRegistry.ensureInitialized();\n`,
+      "return serializerImpl.typeDescriptor;\n",
+      "}\n\n",
+      "internal fun _finalizeSerializer() {\n",
     );
     for (const field of fields) {
       const fieldName = namer.structFieldToKotlinName(field);
@@ -475,9 +535,6 @@ class KotlinSourceFileGenerator {
         "override fun hashCode(): kotlin.Int {\n",
         `return ${kindExpr}.ordinal;\n`,
         "}\n\n",
-        "init {\n",
-        "_maybeFinalizeSerializer();\n",
-        "}\n",
         `}\n\n`, // object
       );
     }
@@ -531,6 +588,7 @@ class KotlinSourceFileGenerator {
       `internal open val _unrecognized: _UnrecognizedVariant<${qualifiedName}>? get() = null;\n\n`,
       "abstract val kind: Kind;\n\n",
       "override fun toString(): kotlin.String {\n",
+      `${this.packagePrefix}skirout._SkirSerializerRegistry.ensureInitialized();\n`,
       "return build.skir.internal.toStringImpl(\n",
       "this,\n",
       `${qualifiedName}._serializerImpl,\n`,
@@ -590,23 +648,22 @@ class KotlinSourceFileGenerator {
       'wrapUnrecognized = { @kotlin.Suppress("DEPRECATION") Unknown(Kind.UNKNOWN, it) },\n',
       "getUnrecognized = { it._unrecognized },\n)",
       ";\n\n",
+      "private val _rawSerializer = build.skir.internal.makeSerializer(_serializerImpl);\n\n",
       `/** Serializer for [${className.name}] instances. */\n`,
-      "val serializer = build.skir.internal.makeSerializer(_serializerImpl);\n\n",
+      `val serializer get(): build.skir.Serializer<${qualifiedName}> {\n`,
+      `${this.packagePrefix}skirout._SkirSerializerRegistry.ensureInitialized();\n`,
+      "return _rawSerializer;\n",
+      "}\n\n",
       `/** Describes the [${className.name}] type. Provides runtime introspection capabilities. */\n`,
-      "val typeDescriptor get() = _serializerImpl.typeDescriptor;\n\n",
-      "init {\n",
+      `val typeDescriptor: build.skir.reflection.EnumDescriptor.Reflective<${qualifiedName}> get() {\n`,
+      `${this.packagePrefix}skirout._SkirSerializerRegistry.ensureInitialized();\n`,
+      "return _serializerImpl.typeDescriptor;\n",
+      "}\n\n",
+      "internal fun _finalizeSerializer() {\n",
     );
     for (const constantVariant of constantVariants) {
       this.push(toEnumConstantName(constantVariant), ";\n");
     }
-    this.push("_maybeFinalizeSerializer();\n");
-    this.push(
-      "}\n\n", // init
-      `private var _finalizationCounter = 0;\n\n`,
-      "private fun _maybeFinalizeSerializer() {\n",
-      "_finalizationCounter += 1;\n",
-      `if (_finalizationCounter == ${constantVariants.length + 1}) {\n`,
-    );
     for (const variant of constantVariants) {
       this.push(
         "_serializerImpl.addConstantVariant(\n",
@@ -643,7 +700,6 @@ class KotlinSourceFileGenerator {
     this.push(
       "_serializerImpl.finalizeEnum();\n",
       "}\n",
-      "}\n", // maybeFinalizeSerializer
       "}\n\n", // companion object
     );
 

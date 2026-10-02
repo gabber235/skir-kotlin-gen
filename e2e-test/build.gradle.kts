@@ -25,6 +25,14 @@ dependencies {
     testImplementation("com.google.truth:truth:1.1.5")
 }
 
+val coldSerializerTest =
+    tasks.register<JavaExec>("coldSerializerTest") {
+        dependsOn(tasks.testClasses)
+        classpath = sourceSets.test.get().runtimeClasspath
+        mainClass.set("ColdSerializerInitialization")
+    }
+
 tasks.test {
+    dependsOn(coldSerializerTest)
     useJUnitPlatform()
 }

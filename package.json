@@ -30,7 +30,8 @@
     "format:check": "prettier --check \"**/*.ts\" && npm run format-skir:check && npm run format-kotlin:check",
     "test": "npm run build && cd e2e-test && skir gen && ./gradlew test && cd ..",
     "lint": "eslint src/**/*.ts",
-    "lint:fix": "eslint src/**/*.ts --fix"
+    "lint:fix": "eslint src/**/*.ts --fix",
+    "prepare": "npm run build"
   },
   "dependencies": {
     "skir-internal": "^0.1.1",
